@@ -1,31 +1,24 @@
-name: Build and Push to ECR
+name: Build & Deploy Spring Boot App
 
 on:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
 
 env:
-  AWS_REGION: us-east-1              # 👉 change if needed
-  ECR_REPOSITORY: java-ecr             # 👉 your repo name
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPO }}
   IMAGE_TAG: latest
 
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
 
-    - name: Checkout Code
+    # 1️⃣ Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Debug - Print Environment
-      run: |
-        echo "=== DEBUG: ENV VARIABLES ==="
-        echo "AWS_REGION=$AWS_REGION"
-        echo "ECR_REPOSITORY=$ECR_REPOSITORY"
-        echo "IMAGE_TAG=$IMAGE_TAG"
-
+    # 2️⃣ Configure AWS credentials
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -33,65 +26,46 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Debug - Check AWS Identity
-      run: |
-        echo "=== DEBUG: AWS Identity ==="
-        aws sts get-caller-identity
+    # 3️⃣ Login to ECR
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Debug - Get Account ID
-      id: account
-      run: |
-        echo "=== DEBUG: Fetch Account ID ==="
-        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-        echo "ACCOUNT_ID=$ACCOUNT_ID"
-        echo "ACCOUNT_ID=$ACCOUNT_ID" >> $GITHUB_ENV
-
-    - name: Debug - Construct ECR Registry
-      run: |
-        echo "=== DEBUG: Constructing ECR Registry ==="
-        echo "ACCOUNT_ID=$ACCOUNT_ID"
-        echo "AWS_REGION=$AWS_REGION"
-        ECR_REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
-        echo "ECR_REGISTRY=$ECR_REGISTRY"
-        echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
-
-    - name: Debug - List Existing Repositories
-      run: |
-        echo "=== DEBUG: Listing ECR Repos ==="
-        aws ecr describe-repositories || echo "No repos found"
-
-    - name: Create ECR Repo if Not Exists
-      run: |
-        echo "=== DEBUG: Checking/Creating Repo ==="
-        aws ecr describe-repositories --repository-names $ECR_REPOSITORY || \
-        aws ecr create-repository --repository-name $ECR_REPOSITORY
-
-    - name: Login to ECR
-      run: |
-        echo "=== DEBUG: Logging into ECR ==="
-        aws ecr get-login-password --region $AWS_REGION | \
-        docker login --username AWS --password-stdin $ECR_REGISTRY
-
+    # 4️⃣ Build Docker Image
     - name: Build Docker Image
       run: |
-        echo "=== DEBUG: Building Docker Image ==="
         docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
 
-    - name: Tag Docker Image
+    # 5️⃣ Tag Image
+    - name: Tag Image
       run: |
-        echo "=== DEBUG: Tagging Image ==="
-        FULL_IMAGE_NAME="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-        echo "FULL_IMAGE_NAME=$FULL_IMAGE_NAME"
-        docker tag $ECR_REPOSITORY:$IMAGE_TAG $FULL_IMAGE_NAME
-        echo "FULL_IMAGE_NAME=$FULL_IMAGE_NAME" >> $GITHUB_ENV
+        docker tag $ECR_REPOSITORY:$IMAGE_TAG ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
 
-    - name: Push Docker Image
+    # 6️⃣ Push to ECR
+    - name: Push Image
       run: |
-        echo "=== DEBUG: Pushing Image ==="
-        docker push $FULL_IMAGE_NAME
+        echo "ecr registry is ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG"
+        docker push ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
 
-    - name: Final Output
-      run: |
-        echo "=== SUCCESS ==="
-        echo "Image pushed to:"
-        echo "$FULL_IMAGE_NAME"
+    # 7️⃣ Deploy to EC2 via SSH
+    - name: Deploy to EC2
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_KEY }}
+        script: |
+          # Login to ECR
+          aws ecr get-login-password --region $AWS_REGION | \
+          docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+
+          # Stop existing container
+          docker stop springboot-app || true
+          docker rm springboot-app || true
+
+          # Pull latest image
+          docker pull ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
+
+          # Run container
+          docker run -d -p 8080:8080 --name springboot-app \
+            ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
