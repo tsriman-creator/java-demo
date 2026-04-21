@@ -56,7 +56,7 @@ jobs:
         key: ${{ secrets.EC2_KEY }}
         script: |
           # Login to ECR
-          aws ecr get-login-password --region $AWS_REGION | \
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
           docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
 
           # Stop existing container
