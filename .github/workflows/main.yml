@@ -68,6 +68,6 @@ jobs:
 
           # Run container
 
-          docker run -d -p 8080:8080 --name springboot-app 522193137516.dkr.ecr.us-east-2.amazonaws.com/java-ecr:latest
+          docker run -d -p 8080:8080 --name springboot-app 522193137516.dkr.ecr.us-east-2.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
 
          
